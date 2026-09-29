@@ -1,0 +1,8 @@
+# Mounts fact-vault into a dsh profile.
+- insert:
+    - id: fact-vault
+      name: dsh-plugin-fact-vault
+      config:
+        enabled: true
+        # libraryPath: ~/.dsh/fact-vault/facts.jsonl
+        limit: 10
