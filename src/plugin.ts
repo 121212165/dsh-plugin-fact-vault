@@ -76,20 +76,7 @@ export function apply(ctx: Context, config: Config): void {
     return fact;
   };
 
-  ctx.commands.register({
-    name: 'fact',
-    description: '事实便签库：/fact save <文本[#标签]> · /fact find <关键词> · /fact list · /fact rm <id>',
-    input: { hint: 'save <text[#tag]> | find <kw> | list | rm <id>' },
-    handler: ({ rawInput }) => {
-      try {
-        return factHandler({ rawInput });
-      } catch (error) {
-        return { kind: 'error' as const, text: `命令 fact 内部出错：${String(error)}。重试一次；持续出现请反馈。` };
-      }
-    },
-  });
-
-  // (definition kept separate so the guard above can wrap it)
+  // (definition kept separate so the guard below can wrap it)
   const factHandler = ({ rawInput }: { rawInput?: string }): { kind: 'success' | 'error'; text: string } => {
       const input = String(rawInput ?? '').trim();
       const [verb, ...rest] = input.split(/\s+/);
