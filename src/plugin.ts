@@ -7,7 +7,7 @@ import Schema from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import type {} from '@deepseek-ai/dsh-commands';
 import type {} from '@deepseek-ai/dsh-tools';
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -46,8 +46,21 @@ export class FactStore {
 
   save(items: Fact[]): void {
     const index = Math.max(this.path.lastIndexOf('/'), this.path.lastIndexOf('\\'));
-    mkdirSync(index === -1 ? '.' : this.path.slice(0, index), { recursive: true });
-    writeFileSync(this.path, items.map((item) => JSON.stringify(item)).join('\n') + '\n', 'utf8');
+    const dir = index === -1 ? '.' : this.path.slice(0, index);
+    mkdirSync(dir, { recursive: true });
+    // temp+rename: a crash mid-write must never leave a torn library behind
+    const tmp = join(dir, `.facts-${process.pid}-${Date.now()}.tmp`);
+    writeFileSync(tmp, items.map((item) => JSON.stringify(item)).join('\n') + '\n', 'utf8');
+    renameSync(tmp, this.path);
+  }
+
+  /** Append-only save: two processes saving concurrently each keep their line,
+   * where a load-modify-rewrite race would silently drop one side's fact. */
+  append(item: Fact): void {
+    const index = Math.max(this.path.lastIndexOf('/'), this.path.lastIndexOf('\\'));
+    const dir = index === -1 ? '.' : this.path.slice(0, index);
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(this.path, JSON.stringify(item) + '\n', 'utf8');
   }
 }
 
@@ -59,8 +72,7 @@ export function apply(ctx: Context, config: Config): void {
   const saveFact = (text: string, tags: string[]): Fact => {
     const items = store.load();
     const fact: Fact = { v: 1, id: nextId(items), text, tags, at: new Date().toISOString() };
-    items.push(fact);
-    store.save(items);
+    store.append(fact);
     return fact;
   };
 
@@ -69,13 +81,25 @@ export function apply(ctx: Context, config: Config): void {
     description: '事实便签库：/fact save <文本[#标签]> · /fact find <关键词> · /fact list · /fact rm <id>',
     input: { hint: 'save <text[#tag]> | find <kw> | list | rm <id>' },
     handler: ({ rawInput }) => {
+      try {
+        return factHandler({ rawInput });
+      } catch (error) {
+        return { kind: 'error' as const, text: `命令 fact 内部出错：${String(error)}。重试一次；持续出现请反馈。` };
+      }
+    },
+  });
+
+  // (definition kept separate so the guard above can wrap it)
+  const factHandler = ({ rawInput }: { rawInput?: string }): { kind: 'success' | 'error'; text: string } => {
       const input = String(rawInput ?? '').trim();
       const [verb, ...rest] = input.split(/\s+/);
       const argument = rest.join(' ');
       if (verb === 'save' && argument) {
         const [text, tagPart] = argument.split('#');
         const tags = (tagPart ?? '').split('#').map((tag) => tag.trim()).filter(Boolean);
-        const fact = saveFact((text ?? '').trim(), tags);
+        const body = (text ?? '').trim();
+        if (!body) return { kind: 'error', text: '没有正文，只有标签的事实不入库。写成 `save <文本>#<标签>`。' };
+        const fact = saveFact(body, tags);
         return { kind: 'success', text: `已记录 #${fact.id}：${fact.text}` };
       }
       if (verb === 'find') {
@@ -91,6 +115,18 @@ export function apply(ctx: Context, config: Config): void {
         return { kind: 'success', text: `已删除 #${argument}` };
       }
       return { kind: 'error', text: `看不懂 "${verb}"。用法：save <text[#tag]> · find <kw> · list · rm <id>` };
+  };
+
+  ctx.commands.register({
+    name: 'fact',
+    description: '事实便签库：/fact save <文本[#标签]> · /fact find <关键词> · /fact list · /fact rm <id>',
+    input: { hint: 'save <text[#tag]> | find <kw> | list | rm <id>' },
+    handler: ({ rawInput }) => {
+      try {
+        return factHandler({ rawInput });
+      } catch (error) {
+        return { kind: 'error' as const, text: `命令 fact 内部出错：${String(error)}。重试一次；持续出现请反馈。` };
+      }
     },
   });
 
