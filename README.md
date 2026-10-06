@@ -1,5 +1,8 @@
 # dsh-plugin-fact-vault
 
+> 🧩 **dsh 插件家族**（22 件）：总目录 **[dsh-plugin-family](https://github.com/121212165/dsh-plugin-family)** ｜ 明星插件：**[ide-hub](https://github.com/121212165/dsh-plugin-ide-hub)** 跨 IDE 统一管理 · **[task-forge](https://github.com/121212165/dsh-plugin-task-forge)** 跨窗口无损交接 · **[quota](https://github.com/121212165/dsh-plugin-quota)** 实时用量仪表
+
+
 **EN** · Cross-session fact notepad: `/fact save` records a decision with tags, `/fact find` ranks recall by keyword, and the model can call `fact_find` itself — so what one window learned, the next can retrieve. · 5 `node --test` green · live headless sessions proved the model calling `fact_find` and the full save→find→list→rm cycle on a temp store.
 
 DeepSeek Harness (dsh) 插件：**跨会话事实便签库**。一句话一条，打标签，之后的任何会话都能按关键词召回——人用 `/fact`，模型自己用 `fact_find` 工具。
