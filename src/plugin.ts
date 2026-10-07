@@ -128,6 +128,13 @@ export function apply(ctx: Context, config: Config): void {
         schema: { type: 'string' } as const,
         render: (_args, value) => [{ type: 'text', text: value }],
       },
+      presentCall: () => ({ card: 'generic' as const, title: '搜事实库', kind: 'search' as const }),
+      presentResult: (_args, value) => ({
+        card: 'generic' as const,
+        title: String(value).split('\n')[0]!.slice(0, 60),
+        kind: 'search' as const,
+        rawInput: value,
+      }),
       async execute(args) {
         return renderFound(findFacts(store.load(), args.query), config.limit);
       },
