@@ -7,9 +7,9 @@ import Schema from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import type {} from '@deepseek-ai/dsh-commands';
 import type {} from '@deepseek-ai/dsh-tools';
-import { mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, existsSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, appendFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { parseLibrary, findFacts, renderList, renderFound, nextId, type Fact } from './library.ts';
 
@@ -32,8 +32,42 @@ export function expandHome(path: string): string {
   return path.startsWith('~') ? join(homedir(), path.slice(1)) : path;
 }
 
+export const LOCK_TIMEOUT_MS = 400;
+export const LOCK_STALE_MS = 5000;
+
+/** Exclusive-create advisory lock, identical to pinboard's helper (family
+ * mutate pattern): spin, take over a stale, degrade to unlocked saves. */
+export function acquireLock(lockPath: string): boolean {
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      closeSync(openSync(lockPath, 'wx'));
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return true;
+      if (Date.now() >= deadline) return false;
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) unlinkSync(lockPath);
+      } catch {
+        // vanished or lost the takeover race — retry the create instead
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  }
+}
+
+function releaseLock(lockPath: string): void {
+  try {
+    unlinkSync(lockPath);
+  } catch {
+    // nothing to clean or someone else handles it
+  }
+}
+
 export class FactStore {
   readonly path: string;
+  /** set by apply() so lock degradation is visible in the plugin log */
+  warn?: (message: string) => void;
 
   constructor(libraryPath: string | undefined) {
     this.path = libraryPath ? expandHome(libraryPath) : join(homedir(), '.dsh', 'fact-vault', 'facts.jsonl');
@@ -45,8 +79,7 @@ export class FactStore {
   }
 
   save(items: Fact[]): void {
-    const index = Math.max(this.path.lastIndexOf('/'), this.path.lastIndexOf('\\'));
-    const dir = index === -1 ? '.' : this.path.slice(0, index);
+    const dir = dirname(this.path);
     mkdirSync(dir, { recursive: true });
     // temp+rename: a crash mid-write must never leave a torn library behind
     const tmp = join(dir, `.facts-${process.pid}-${Date.now()}.tmp`);
@@ -57,10 +90,22 @@ export class FactStore {
   /** Append-only save: two processes saving concurrently each keep their line,
    * where a load-modify-rewrite race would silently drop one side's fact. */
   append(item: Fact): void {
-    const index = Math.max(this.path.lastIndexOf('/'), this.path.lastIndexOf('\\'));
-    const dir = index === -1 ? '.' : this.path.slice(0, index);
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dirname(this.path), { recursive: true });
     appendFileSync(this.path, JSON.stringify(item) + '\n', 'utf8');
+  }
+
+  /** The one write path for id-allocating mutations: load nextId and append
+   * under the lock, so concurrent processes do not mint duplicate ids. */
+  mutate<T>(fn: (view: { load(): Fact[]; append(item: Fact): void; save(items: Fact[]): void }) => T): T {
+    mkdirSync(dirname(this.path), { recursive: true });
+    const lockPath = `${this.path}.lock`;
+    const locked = acquireLock(lockPath);
+    if (!locked) this.warn?.('fact-vault lock busy — saved without lock');
+    try {
+      return fn({ load: () => this.load(), append: (item) => this.append(item), save: (items) => this.save(items) });
+    } finally {
+      if (locked) releaseLock(lockPath);
+    }
   }
 }
 
@@ -68,11 +113,14 @@ export function apply(ctx: Context, config: Config): void {
   const log = ctx.logger('fact-vault');
   if (!config.enabled) return void log.info('disabled by config');
   const store = new FactStore(config.libraryPath);
+  store.warn = (message) => log.warn(message);
 
   const saveFact = (text: string, tags: string[]): Fact => {
-    const items = store.load();
-    const fact: Fact = { v: 1, id: nextId(items), text, tags, at: new Date().toISOString() };
-    store.append(fact);
+    let fact!: Fact;
+    store.mutate((view) => {
+      fact = { v: 1, id: nextId(view.load()), text, tags, at: new Date().toISOString() };
+      view.append(fact);
+    });
     return fact;
   };
 
@@ -95,10 +143,14 @@ export function apply(ctx: Context, config: Config): void {
       }
       if (verb === 'list' || !verb) return { kind: 'success', text: renderList(store.load()) };
       if (verb === 'rm') {
-        const items = store.load();
-        const kept = items.filter((item) => item.id !== argument);
-        if (kept.length === items.length) return { kind: 'error', text: `没有 #${argument}` };
-        store.save(kept);
+        let removed: Fact | null = null;
+        store.mutate((view) => {
+          const items = view.load();
+          const kept = items.filter((item) => item.id !== argument);
+          if (kept.length !== items.length) removed = items.find((item) => item.id === argument) ?? null;
+          view.save(kept);
+        });
+        if (!removed) return { kind: 'error', text: `没有 #${argument}` };
         return { kind: 'success', text: `已删除 #${argument}` };
       }
       return { kind: 'error', text: `看不懂 "${verb}"。用法：save <text[#tag]> · find <kw> · list · rm <id>` };
@@ -137,6 +189,37 @@ export function apply(ctx: Context, config: Config): void {
       }),
       async execute(args) {
         return renderFound(findFacts(store.load(), args.query), config.limit);
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'fact_save',
+      description:
+        '往跨会话事实便签库里存一条事实（**不注入**系统提示，任何会话里用 fact_find 召回）。用户说"记住/记下来/这个事实以后有用"时用它，不要写临时文件。',
+      parameters: {
+        text: { type: 'string', required: true, description: '事实正文，一句话，入库时压成单行' },
+        tags: { type: 'array', items: { type: 'string' }, description: '可选标签；召回时标签命中 3 分' },
+      },
+      output: {
+        schema: { type: 'string' } as const,
+        render: (_args, value) => [{ type: 'text', text: value }],
+      },
+      presentCall: () => ({ card: 'generic' as const, title: '存事实', kind: 'edit' as const }),
+      presentResult: (_args, value) => ({
+        card: 'generic' as const,
+        title: String(value).split('\n')[0]!.slice(0, 60),
+        kind: 'edit' as const,
+        rawInput: value,
+      }),
+      async execute(args) {
+        const text = String(args.text ?? '').replace(/\s+/g, ' ').trim();
+        if (!text) return '内容为空，未入库。给一句事实正文。';
+        const tags = [...new Set((args.tags ?? []).map((tag) => String(tag).replace(/^#/, '').trim().toLowerCase()).filter(Boolean))];
+        const fact = saveFact(text, tags);
+        const hint = fact.tags.length ? `fact_find ${fact.tags[0]}` : 'fact_find <关键词>';
+        return `已记录 #${fact.id}：${fact.text}（不注入系统提示；用 ${hint} 召回）`;
       },
     }),
   );
