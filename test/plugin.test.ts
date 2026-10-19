@@ -31,7 +31,7 @@ async function mounted(config: Record<string, unknown> = {}) {
   tempDirs.push(dir);
   const libraryPath = join(dir, 'facts.jsonl');
   const ctx = {
-    logger(name: string) {
+    logger() {
       return { info() {}, warn() {}, error() {}, debug() {} } as never;
     },
     commands: { register(definition: CapturedCommand) { commands.push(definition); } },
