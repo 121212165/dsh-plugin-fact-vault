@@ -27,6 +27,11 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "catalog": {
+      "category": "会话与知识库",
+      "blurb": "事实便签库：登记可复用的项目事实，tag 加权检索",
+      "entries": "`/fact` `fact_find`"
     }
   },
   "engines": {
