@@ -12,15 +12,15 @@ export interface Config {
     libraryPath?: string;
     limit: number;
 }
-export declare const Config: Schema<Schemastery.ObjectS<{
-    enabled: Schema<boolean, boolean>;
-    libraryPath: Schema<string, string>;
-    limit: Schema<number, number>;
-}>, Schemastery.ObjectT<{
-    enabled: Schema<boolean, boolean>;
-    libraryPath: Schema<string, string>;
-    limit: Schema<number, number>;
-}>>;
+export declare const Config: Schema<Schemastery.ObjectS<NoInfer<{
+    enabled: Schema<boolean, boolean, "defined">;
+    libraryPath: Schema<string, string, "plain">;
+    limit: Schema<number, number, "defined">;
+}>>, Schemastery.ObjectT<NoInfer<{
+    enabled: Schema<boolean, boolean, "defined">;
+    libraryPath: Schema<string, string, "plain">;
+    limit: Schema<number, number, "defined">;
+}>>, "plain">;
 export declare function expandHome(path: string): string;
 export declare const LOCK_TIMEOUT_MS = 400;
 export declare const LOCK_STALE_MS = 5000;
